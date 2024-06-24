@@ -27,14 +27,12 @@ def diff(main_out, brute_out):
 for i in range(100):
     print(f'running test number {i}')
 
-    n = random.randint(3, 4)
-    m = random.randint(3, 4)
-    k = random.randint(3, 4)
     l = random.randint(1, 2)
-    pc = random.randint(1, min(5, max([n // l, m // l, k // l])))
+    pc = random.randint(1, 2)
+    n = random.randint(3, 20)
 
-    generate(n, m, random.randint(0, n * m), 'atest')
-    generate(m, k, random.randint(0, m * k), 'btest')
+    generate(n, n, random.randint(0, n * n), 'atest')
+    generate(n, n, random.randint(0, n * n), 'btest')
     main('atest', 'btest', pc, l, '3D', 'main.out')
     brute('atest', 'btest', 'brute.out')
 

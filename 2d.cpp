@@ -82,6 +82,5 @@ Matrix summa2d(const char *path_a, const char *path_b) {
         intermediate_result[stage] = a_cur * b_cur;
     }
 
-
     return Matrix::merge(intermediate_result);
 }

@@ -241,7 +241,7 @@ void Matrix::sort_by_cols() {
         cells_.begin(),
         cells_.end(),
         [](const Cell &a, const Cell &b) {
-            return a.col < b.col;
+            return std::pair(a.col, a.row) < std::pair(b.col, b.row);
         }
     );
 }
@@ -425,7 +425,7 @@ void Matrix::print() const {
 
                         for (uint32_t c = 0; c < width[j * info.num_layers() + k]; c++) {
                             if (*ptr < data->size() && ((*data)[*ptr].row == r) && (*data)[*ptr].col == c) {
-                                std::cout << (*data)[*ptr].value << " ";
+                                std::cout << (int) (*data)[*ptr].value << " ";
                                 (*ptr)++;
                             } else {
                                 std::cout << 0.0 << " ";

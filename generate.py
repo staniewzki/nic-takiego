@@ -16,7 +16,7 @@ if n * m < nnz:
 print(f'{n} {m} {nnz} {m}')
 
 for i in range(nnz):
-    print(random.uniform(-100.0, 100.0), end=' ')
+    print(random.randint(-2, 2), end=' ')
 print()
 
 rows = [0] * n
