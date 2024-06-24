@@ -4,6 +4,8 @@
 #include <optional>
 
 #include "2d.h"
+#include "3d.h"
+#include "utils.h"
 
 enum class Mode {
     TwoDim,
@@ -13,7 +15,7 @@ enum class Mode {
 
 struct Config {
     bool print_result = false;
-    std::optional<double> g_value;
+    std::optional<long long> g_value;
     const char *path_a = NULL, *path_b = NULL;
     std::optional<Mode> mode;
     int layers = 0;
@@ -37,7 +39,7 @@ Config parse_args(int argc, char *argv[]) {
         } else if (strcmp(argv[i], "-v") == 0) {
             conf.print_result = true;
         } else if (strcmp(argv[i], "-g") == 0) {
-            conf.g_value = std::atoi(following_arg("-g"));
+            conf.g_value = std::atoll(following_arg("-g"));
         } else if (strcmp(argv[i], "-t") == 0) {
             auto mode = following_arg("-t");
             if (strcmp(mode, "2D") == 0) {
@@ -64,26 +66,59 @@ Config parse_args(int argc, char *argv[]) {
 int main(int argc, char *argv[]) {
     Config conf = parse_args(argc, argv);
 
+    MPI_Init(&argc, &argv);
+
+    /* Set number of layers */
+    auto &info = MPIInfo::instance(conf.layers);
+
     if (!conf.path_a && !conf.path_b) {
-        std::cerr << "error: matrices are not provided\n";
+        if (info.rank() == 0) {
+            std::cerr << "error: matrices are not provided\n";
+        }
+        MPI_Finalize();
         return 1;
     }
 
     if (!conf.mode) {
         /* Use 2D by default */
-        std::cerr << "warning: no mode was provided, using 2D\n";
+        if (info.rank() == 0) {
+            std::cerr << "warning: no mode was provided, using 2D\n";
+        }
         conf.mode = Mode::TwoDim;
     }
 
-    MPI_Init(&argc, &argv);
+    if (conf.mode == Mode::TwoDim) {
+        conf.layers = 1;
+    }
 
+    Matrix result;
     switch (*conf.mode) {
         case Mode::TwoDim:
-            summa2d(conf.path_a, conf.path_b, conf.print_result, conf.g_value);
+            result = summa2d(conf.path_a, conf.path_b);
+            break;
+
+        case Mode::ThreeDim:
+            result = summa3d(conf.path_a, conf.path_b);
             break;
 
         default:
-            std::cerr << "error: mode unimplemented\n";
+            if (info.rank() == 0) {
+                std::cerr << "error: mode unimplemented\n";
+            }
+            MPI_Finalize();
+            return 1;
+    }
+
+    if (conf.print_result) {
+        result.print();
+    }
+
+    if (conf.g_value) {
+        long long cnt = result.count_greater(*conf.g_value), sum;
+        MPI_Reduce(&cnt, &sum, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+        if (info.rank() == 0) {
+            std::cout << sum << "\n";
+        }
     }
 
     MPI_Finalize();

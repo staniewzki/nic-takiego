@@ -6,179 +6,159 @@
 #include <queue>
 #include <mpi.h>
 
-#include "matrix.h"
 #include "utils.h"
+
+#include "matrix.h"
 
 namespace {
 
 class Partition {
   public:
-    Partition(int n, int segments) {
+    Partition(uint32_t n, uint32_t segments) {
+        segments_ = segments;
         quotient_ = n / segments;
         rest_ = n % segments;
     }
 
-    int starts_at(int idx) const {
+    /**
+     * @brief Calculates the start of segment with the given index
+     */
+    uint32_t starts_at(uint32_t idx) const {
         return idx < rest_ ? (quotient_ + 1) * idx : quotient_ * idx + rest_;
     }
 
+    /**
+     * @brief Finds the segment given position belongs to
+     */
+    int belongs_to(uint32_t pos) const {
+        int l = 0, r = segments_ - 1;
+        while (l < r) {
+            int m = (l + r + 1) / 2;
+            if (starts_at(m) <= pos) {
+                l = m;
+            } else {
+                r = m - 1;
+            }
+        }
+        return l;
+    }
+
   private:
-    int quotient_, rest_;
+    uint32_t segments_, quotient_, rest_;
 };
 
-/**
- * @brief Opens a stream for each array in CSR file
-*/
-std::tuple<std::ifstream, std::ifstream, std::ifstream, int, int, int, int>
-set_csr_streams(const char *filename) {
-    std::ifstream values(filename), cols(filename), cells_per_row(filename);
-
-    int n, m, nnz, max_per_row;
-    values >> n >> m >> nnz >> max_per_row;
-
-    /* Skip the values and prepare to read COL_INDEX array */
-    cols.seekg(values.tellg());
-    for (int i = 0; i < nnz; i++) {
-        double dummy;
-        cols >> dummy;
-    }
-
-    /* Skip COL_INDEX and the first entry in ROW_INDEX array */
-    cells_per_row.seekg(cols.tellg());
-    for (int i = 0; i < nnz + 1; i++) {
-        int dummy;
-        cells_per_row >> dummy;
-    }
-
-    return {
-        std::move(values),
-        std::move(cols),
-        std::move(cells_per_row),
-        n,
-        m,
-        nnz,
-        max_per_row
-    };
 }
 
-}
-
-Matrix Matrix::read_and_distribute(const char *filename) {
+Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
     auto &info = MPIInfo::instance();
-
     if (info.rank() == 0) {
-        auto [values, cols, cells_per_row, n, m, nnz, max_per_row] = set_csr_streams(filename);
+        std::ifstream stream(filename);
 
-        Partition row_part(n, info.pc());
-        Partition col_part(m, info.pc());
+        uint32_t n, m, max_per_row;
+        uint64_t nnz;
+        stream >> n >> m >> nnz >> max_per_row;
 
-        /* Send coordinates to each node. */
-        for (int i = 0; i < info.pc(); i++) {
-            for (int j = 0; j < info.pc(); j++) {
-                if (i == 0 && j == 0) continue;
-                std::array<int, 4> coords = {
-                    row_part.starts_at(i),
-                    col_part.starts_at(j),
-                    row_part.starts_at(i + 1) - row_part.starts_at(i),
-                    col_part.starts_at(j + 1) - col_part.starts_at(j),
-                };
-                MPI_Send(coords.data(), 4, MPI_INT, i * info.pc() + j, 0, MPI_COMM_WORLD);
+        std::vector<double> values(nnz);
+        std::vector<uint32_t> cols(nnz), cells_per_row(n);
+
+        for (uint64_t i = 0; i < nnz; i++)
+            stream >> values[i];
+
+        for (uint64_t i = 0; i < nnz; i++)
+            stream >> cols[i];
+
+        // skip the starting zero
+        stream >> cells_per_row[0];
+
+        for (uint32_t i = 0; i < n; i++)
+            stream >> cells_per_row[i];
+
+        int layers_in_row = split == SplitAlong::Row ? info.num_layers() : 1;
+        int layers_in_col = split == SplitAlong::Col ? info.num_layers() : 1;
+
+        std::vector<std::vector<Cell>> matrices(info.num_procs());
+
+        Partition row_part(n, info.pc() * layers_in_row);
+        Partition col_part(m, info.pc() * layers_in_col);
+
+        auto part_num = [&](int r, int c) {
+            return r * info.pc() * layers_in_col + c;
+        };
+
+        uint32_t ptr = 0;
+        for (uint32_t i = 0; i < n; i++) {
+            for (; ptr < cells_per_row[i]; ptr++) {
+                int r = row_part.belongs_to(i);
+                int c = col_part.belongs_to(cols[ptr]);
+                matrices[part_num(r, c)].emplace_back(Cell {i, cols[ptr], values[ptr]});
             }
         }
 
-        std::vector<Cell> cur;
-        Matrix mat(row_part.starts_at(1), col_part.starts_at(1));
+        auto row_idx = [&](int k, int i) {
+            return split == SplitAlong::Row ? k + info.num_layers() * i : i;
+        };
 
-        int row_owner = 0;
-        int next_row_part = row_part.starts_at(1);
-        int cells_processed = 0;
-        for (int i = 0; i < n; i++) {
-            if (i == next_row_part) {
-                row_owner++;
-                next_row_part = row_part.starts_at(row_owner + 1);
-            }
+        auto col_idx = [&](int k, int j) {
+            return split == SplitAlong::Col ? k + info.num_layers() * j : j;
+        };
 
-            int cells_num;
-            cells_per_row >> cells_num;
+        auto proc_idx = [&](int k, int i, int j) {
+            return k * info.pc() * info.pc() + i * info.pc() + j;
+        };
 
-            if (cells_num == 0)
-                continue;
+        for (int k = 0; k < info.num_layers(); k++) {
+            for (int i = 0; i < info.pc(); i++) {
+                for (int j = 0; j < info.pc(); j++) {
+                    int r = row_idx(k, i);
+                    int c = col_idx(k, j);
 
-            int col_owner = 0;
-            int next_col_part = col_part.starts_at(1);
+                    if (r == 0 && c == 0) continue;
 
-            auto flush_cur = [&] {
-                int send_to = row_owner * info.pc() + col_owner;
-                if (send_to == 0) {
-                    for (auto &cell : cur)
-                        mat.cells_.push_back(std::move(cell));
-                } else {
-                    int cells = cur.size();
-                    MPI_Send(&cells, 1, MPI_INT, send_to, 0, MPI_COMM_WORLD);
-                    MPI_Send(cur.data(), cells * sizeof(Cell), MPI_BYTE, send_to, 0, MPI_COMM_WORLD);
+                    std::array meta = {
+                        row_part.starts_at(r),
+                        col_part.starts_at(c),
+                        row_part.starts_at(r + 1) - row_part.starts_at(r),
+                        col_part.starts_at(c + 1) - col_part.starts_at(c),
+                        static_cast<uint32_t>(matrices[part_num(r, c)].size()),
+                    };
+
+                    MPI_Send(meta.data(), meta.size(), MPI_UINT32_T, proc_idx(k, i, j), 0, MPI_COMM_WORLD);
+
+                    MPI_Send(
+                        matrices[part_num(r, c)].data(),
+                        matrices[part_num(r, c)].size() * sizeof(Cell),
+                        MPI_BYTE,
+                        proc_idx(k, i, j),
+                        0,
+                        MPI_COMM_WORLD
+                    );
                 }
-                cur.clear();
-            };
-
-            for (; cells_processed < cells_num; cells_processed++) {
-                double value;
-                int col;
-
-                values >> value;
-                cols >> col;
-
-                while (next_col_part <= col) {
-                    if (!cur.empty())
-                        flush_cur();
-
-                    col_owner++;
-                    next_col_part = col_part.starts_at(col_owner + 1);
-                }
-
-                cur.push_back(Cell {i, col, value});
             }
-
-            if (!cur.empty())
-                flush_cur();
         }
 
-        for (int i = 1; i < info.num_procs(); i++) {
-            int end_of_distribution = -1;
-            MPI_Send(&end_of_distribution, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
-        }
-
-        return mat;
+        Matrix own(row_part.starts_at(1), col_part.starts_at(1));
+        own.cells_ = std::move(matrices[0]);
+        return own;
     } else {
-        std::array<int, 4> coords;
-        MPI_Recv(coords.data(), 4, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        std::array<uint32_t, 5> meta;
+        MPI_Recv(meta.data(), 5, MPI_UINT32_T, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-        Matrix mat(coords[2], coords[3]);
-        while (true) {
-            int cells_num;
-            MPI_Recv(&cells_num, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        Matrix mat(meta[2], meta[3]);
+        mat.cells_.resize(meta[4]);
 
-            if (cells_num == -1) {
-                /* There are no more cells */
-                break;
-            }
-
-            size_t current_size = mat.cells_.size();
-            mat.cells_.resize(current_size + cells_num);
-
-            MPI_Recv(
-                mat.cells_.data() + current_size,
-                cells_num * sizeof(Cell),
-                MPI_BYTE,
-                0,
-                0,
-                MPI_COMM_WORLD,
-                MPI_STATUS_IGNORE
-            );
-        }
+        MPI_Recv(
+            mat.cells_.data(),
+            meta[4] * sizeof(Cell),
+            MPI_BYTE,
+            0,
+            0,
+            MPI_COMM_WORLD,
+            MPI_STATUS_IGNORE
+        );
 
         for (auto &cell : mat.cells_) {
-            cell.row -= coords[0];
-            cell.col -= coords[1];
+            cell.row -= meta[0];
+            cell.col -= meta[1];
         }
 
         return mat;
@@ -193,35 +173,36 @@ Matrix Matrix::read_and_distribute(const char *filename) {
 Matrix operator*(const Matrix &a, const Matrix &b) {
     assert(a.m_ == b.n_);
 
-    int start = 0, end = -1;
-
-    auto find_in_row = [&](int col) -> std::optional<double> {
-        int l = start, r = end;
-        while (l <= r) {
-            int m = (l + r) / 2;
-            if (a.cells_[m].col == col) {
-                return a.cells_[m].value;
-            } else if (a.cells_[m].col < col) {
-                l = m + 1;
-            } else {
-                r = m - 1;
-            }
-        }
-        return std::nullopt;
-    };
+    /* Indexes of the row in matrix a that is currently processed */
+    uint32_t start = 0, end = 0;
 
     Matrix res(a.n_, b.m_);
 
+    /* Multiply cells from a the current row in matrix A */
     auto flush_row = [&] {
-        int row = a.cells_[start].row;
-        int col = -1;
+        if (a.cells_.size() <= start || b.cells_.empty()) return;
+
+        uint32_t row = a.cells_[start].row;
+        uint32_t current_col = b.cells_[0].col;
+        long long ptr = start;
+        bool created = false;
+
         for (const auto &cell : b.cells_) {
-            auto corresponding = find_in_row(cell.row);
-            if (corresponding && cell.col == col) {
-                res.cells_.back().value += *corresponding * cell.value;
-            } else if (corresponding) {
-                col = cell.col;
-                res.cells_.push_back(Cell {row, col, *corresponding * cell.value});
+            if (cell.col != current_col) {
+                current_col = cell.col;
+                ptr = start;
+                created = false;
+            }
+
+            while (ptr < end && a.cells_[ptr].col < cell.row)
+                ptr++;
+
+            if (ptr < end && a.cells_[ptr].col == cell.row) {
+                if (created) {
+                    res.cells_.back().value += a.cells_[ptr].value * cell.value;
+                } else {
+                    res.cells_.push_back(Cell {row, current_col, a.cells_[ptr].value * cell.value});
+                }
             }
         }
     };
@@ -265,21 +246,44 @@ void Matrix::sort_by_cols() {
     );
 }
 
-void Matrix::init_broadcast(int self, int root, MPI_Comm comm, MPI_Request *request) {
+void Matrix::init_broadcast(int self, int root, MPI_Comm comm, MatrixInfo &info) {
     if (self == root)
-        buffer_ = {n_, m_, static_cast<int>(cells_.size())};
-    MPI_Ibcast(buffer_.data(), 3, MPI_INT, root, comm, request);
+        info = {n_, m_, static_cast<uint32_t>(cells_.size())};
+    MPI_Ibcast(info.data.data(), 3, MPI_UINT32_T, root, comm, &info.request);
 }
 
-void Matrix::broadcast(int self, int root, MPI_Comm comm, MPI_Request *init, MPI_Request *request) {
-    MPI_Wait(init, MPI_STATUS_IGNORE);
+void Matrix::broadcast(int self, int root, MPI_Comm comm, MatrixInfo &info, MPI_Request &request) {
+    MPI_Wait(&info.request, MPI_STATUS_IGNORE);
     if (self != root) {
-        n_ = buffer_[0];
-        m_ = buffer_[1];
-        cells_.resize(buffer_[2]);
+        n_ = info.n();
+        m_ = info.m();
+        cells_.resize(info.cells());
     }
 
-    MPI_Ibcast(cells_.data(), cells_.size() * sizeof(Cell), MPI_BYTE, root, comm, request);
+    MPI_Ibcast(cells_.data(), cells_.size() * sizeof(Cell), MPI_BYTE, root, comm, &request);
+}
+
+void Matrix::init_send(int dest, MatrixInfo &info) const {
+    info = {n_, m_, static_cast<uint32_t>(cells_.size())};
+    MPI_Isend(info.data.data(), 3, MPI_UINT32_T, dest, 0, MPI_COMM_WORLD, &info.request);
+}
+
+void Matrix::send(int dest, MatrixInfo &info, MPI_Request &request) const {
+    MPI_Wait(&info.request, MPI_STATUS_IGNORE);
+    MPI_Isend(cells_.data(), cells_.size() * sizeof(Cell), MPI_BYTE, dest, 0, MPI_COMM_WORLD, &request);
+}
+
+void Matrix::init_receive(int source, MatrixInfo &info) {
+    MPI_Irecv(info.data.data(), 3, MPI_UINT32_T, source, 0, MPI_COMM_WORLD, &info.request);
+}
+
+void Matrix::receive(int source, MatrixInfo &info, MPI_Request &request) {
+    MPI_Wait(&info.request, MPI_STATUS_IGNORE);
+    n_ = info.n();
+    m_ = info.m();
+    cells_.resize(info.cells());
+
+    MPI_Irecv(cells_.data(), cells_.size() * sizeof(Cell), MPI_BYTE, source, 0, MPI_COMM_WORLD, &request);
 }
 
 Matrix Matrix::merge(std::vector<Matrix> matrices) {
@@ -287,11 +291,11 @@ Matrix Matrix::merge(std::vector<Matrix> matrices) {
     std::vector<size_t> position(k);
 
     std::priority_queue<
-        std::tuple<int, int, int>,
-        std::vector<std::tuple<int, int, int>>,
-        std::greater<std::tuple<int, int, int>>> queue;
+        std::tuple<uint32_t, uint32_t, uint32_t>,
+        std::vector<std::tuple<uint32_t, uint32_t, uint32_t>>,
+        std::greater<std::tuple<uint32_t, uint32_t, uint32_t>>> queue;
 
-    auto add_from = [&](int idx) {
+    auto add_from = [&](uint32_t idx) {
         if (position[idx] < matrices[idx].cells_.size()) {
             auto cell = matrices[idx].cells_[position[idx]];
             queue.emplace(cell.row, cell.col, idx);
@@ -321,7 +325,7 @@ Matrix Matrix::merge(std::vector<Matrix> matrices) {
     return mat;
 }
 
-long long Matrix::count_greater(double value) const {
+long long Matrix::count_greater(long long value) const {
     long long res = 0;
     for (const auto &cell : cells_) {
         if (cell.value > value)
@@ -333,4 +337,124 @@ long long Matrix::count_greater(double value) const {
     }
 
     return res;
+}
+
+std::vector<Matrix> Matrix::col_split() {
+    auto &info = MPIInfo::instance();
+    Partition part(m_, info.num_layers());
+
+    std::vector<Matrix> res;
+    for (int i = 0; i < info.num_layers(); i++)
+        res.emplace_back(n_, part.starts_at(i + 1) - part.starts_at(i));
+
+    for (auto &cell : cells_) {
+        int l = 0, r = info.num_layers() - 1;
+        while (l < r) {
+            int m = (l + r + 1) / 2;
+            if (cell.col >= part.starts_at(m))
+                l = m;
+            else
+                r = m - 1;
+        }
+
+        cell.col -= part.starts_at(l);
+        res[l].cells_.push_back(std::move(cell));
+    }
+
+    return res;
+}
+
+void Matrix::print() const {
+    auto &info = MPIInfo::instance();
+
+    MPI_Comm row_comm;
+    MPI_Comm_split(MPI_COMM_WORLD, info.row(), info.col() * info.num_layers() + info.layer(), &row_comm);
+
+    std::vector<uint32_t> width;
+    if (info.rank() == 0) {
+        width.resize(info.pc() * info.num_layers());
+    }
+
+    if (info.row() == 0) {
+        MPI_Gather(&m_, 1, MPI_UINT32_T, width.data(), 1, MPI_INT, 0, row_comm);
+    }
+
+    auto process = [&](int i, int j, int k) {
+        return k * info.pc() * info.pc() + i * info.pc() + j;
+    };
+
+    constexpr int HEIGHT_MSG = 4001;
+    constexpr int NUM_CELLS_MSG = 4002;
+    constexpr int CELLS_MSG = 4003;
+
+    if (info.rank() == 0) {
+        size_t self_pos = 0, pos;
+        std::vector<Cell> buffer;
+        for (int i = 0; i < info.pc(); i++) {
+            uint32_t height;
+            if (i == 0) {
+                height = n_;
+            } else {
+                MPI_Recv(&height, 1, MPI_UINT32_T, process(i, 0, 0), HEIGHT_MSG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            }
+
+            for (uint32_t r = 0; r < height; r++) {
+                for (int j = 0; j < info.pc(); j++) {
+                    for (int k = 0; k < info.num_layers(); k++) {
+                        const std::vector<Cell> *data;
+                        size_t *ptr;
+
+                        if (process(i, j, k) == 0) {
+                            data = &cells_;
+                            ptr = &self_pos;
+                        } else {
+                            uint32_t num_cells = 0;
+                            MPI_Recv(
+                                &num_cells, 1, MPI_UINT32_T, process(i, j, k), NUM_CELLS_MSG,
+                                MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+                            buffer.resize(num_cells);
+                            MPI_Recv(
+                                buffer.data(), num_cells * sizeof(Cell), MPI_BYTE,
+                                process(i, j, k), CELLS_MSG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+                            data = &buffer;
+                            ptr = &pos;
+                            pos = 0;
+                        }
+
+                        for (uint32_t c = 0; c < width[j * info.num_layers() + k]; c++) {
+                            if (*ptr < data->size() && ((*data)[*ptr].row == r) && (*data)[*ptr].col == c) {
+                                std::cout << (*data)[*ptr].value << " ";
+                                (*ptr)++;
+                            } else {
+                                std::cout << 0.0 << " ";
+                            }
+                        }
+                    }
+                }
+
+                std::cout << "\n";
+            }
+        }
+    } else {
+        if (info.col() == 0) {
+            MPI_Send(&n_, 1, MPI_INT, 0, HEIGHT_MSG, MPI_COMM_WORLD);
+        }
+
+        uint32_t l = 0, r = 0;
+        for (uint32_t i = 0; i < n_; i++) {
+            while (r < cells_.size() && cells_[r].row == i)
+                r++;
+
+            uint32_t len = r - l;
+            MPI_Send(&len, 1, MPI_UINT32_T, 0, NUM_CELLS_MSG, MPI_COMM_WORLD);
+
+            MPI_Send(
+                (len == 0 ? nullptr : &cells_[l]), len * sizeof(Cell),
+                MPI_BYTE, 0, CELLS_MSG, MPI_COMM_WORLD);
+
+            l = r;
+        }
+    }
 }
