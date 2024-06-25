@@ -43,6 +43,9 @@ Matrix summa3d(const char *path_a, const char *path_b) {
         for (const auto &cell : split[i].cells())
             send_data.emplace_back(cell);
 
+    /* deallocate */
+    split = {};
+
     std::vector<Cell> recv_data(total_recv);
     MPI_Alltoallv(send_data.data(), sendcnt.data(), sendoff.data(), MPI_BYTE,
                   recv_data.data(), recvcnt.data(), recvoff.data(), MPI_BYTE, fiber_comm);

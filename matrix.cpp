@@ -240,6 +240,9 @@ Matrix operator*(const Matrix &a, const Matrix &b) {
     return res;
 }
 
+/**
+ * @brief Printing for debug purposes
+ */
 std::ostream& operator<<(std::ostream &stream, const Matrix &mat) {
     stream << "{";
     bool first = true;
@@ -354,6 +357,11 @@ long long Matrix::count_greater(double value) const {
     return res;
 }
 
+/**
+ * @brief Split the matrix by columns into layers.
+ *
+ * Consumes the matrix.
+ */
 std::vector<Matrix> Matrix::col_split() {
     auto &info = MPIInfo::instance();
     Partition part(m_, info.num_layers());
@@ -365,8 +373,11 @@ std::vector<Matrix> Matrix::col_split() {
     for (auto &cell : cells_) {
         int idx = part.belongs_to(cell.col);
         cell.col -= part.starts_at(idx);
-        res[idx].cells_.push_back(std::move(cell));
+        res[idx].cells_.emplace_back(cell);
     }
+
+    /* deallocate */
+    cells_ = {};
 
     return res;
 }
@@ -376,8 +387,8 @@ const std::vector<Cell> &Matrix::cells() const {
 }
 
 void Matrix::print() const {
+    /* FIXME: this is slow, because I have assumed here that we cannot fit all the cells into memory */
     auto &info = MPIInfo::instance();
-
     MPI_Comm row_comm;
     MPI_Comm_split(MPI_COMM_WORLD, info.row(), info.col() * info.num_layers() + info.layer(), &row_comm);
 

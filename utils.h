@@ -6,6 +6,11 @@
 
 class MPIInfo {
   public:
+    /**
+     * @brief Returns a singleton instance.
+     *
+     * When this method is called first time, layers_num must be passed.
+     */
     static const MPIInfo &instance(int initial_layers_num = 0) {
         static MPIInfo info(initial_layers_num);
         return info;

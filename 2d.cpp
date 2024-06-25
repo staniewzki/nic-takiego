@@ -5,43 +5,12 @@
 
 #include "2d.h"
 
-namespace {
-
-struct DebugMutex {
-    DebugMutex() {
-        auto &info = MPIInfo::instance();
-        int msg;
-
-        if (info.rank() != 0) {
-            MPI_Recv(&msg, 1, MPI_INT, info.rank() - 1, 111, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        }
-    }
-
-    ~DebugMutex() {
-        auto &info = MPIInfo::instance();
-        int msg;
-
-        MPI_Send(&msg, 1, MPI_INT, (info.rank() + 1) % info.num_procs(), 111, MPI_COMM_WORLD);
-        if (info.rank() == 0) {
-            MPI_Recv(&msg, 1, MPI_INT, info.num_procs() - 1, 111, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        }
-    }
-};
-
-}
-
 Matrix summa2d(const char *path_a, const char *path_b) {
     Matrix a = Matrix::read_and_distribute(path_a, SplitAlong::Col);
     Matrix b = Matrix::read_and_distribute(path_b, SplitAlong::Row);
     b.sort_by_cols();
 
     auto &info = MPIInfo::instance();
-
-    // {
-    //     DebugMutex mtx;
-    //     std::cerr << "[rank = " << info.rank() << "] a: " << a << "\n";
-    //     std::cerr << "[rank = " << info.rank() << "] b: " << b << "\n";
-    // }
 
     MPI_Comm row_comm, col_comm;
     MPI_Comm_split(MPI_COMM_WORLD, info.layer() * info.pc() + info.row(), info.col(), &row_comm);
