@@ -125,6 +125,7 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
                         static_cast<uint32_t>(matrices[part_num(r, c)].size()),
                     };
 
+                    std::cerr << "sending to: " << proc_idx(k, i, j) << " cells: " << matrices[part_num(r, c)].size() << "\n";
                     MPI_Isend(meta.data(), meta.size(), MPI_UINT32_T, proc_idx(k, i, j),
                               MSG_META, MPI_COMM_WORLD, &requests[proc_idx(k, i, j)]);
                 }
@@ -163,6 +164,7 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
         std::array<uint32_t, 5> meta;
         MPI_Irecv(meta.data(), 5, MPI_UINT32_T, 0, MSG_META, MPI_COMM_WORLD, &request);
         MPI_Wait(&request, MPI_STATUS_IGNORE);
+        std::cerr << "received: " << info.rank() << " cells: " << meta[4] << "\n";
 
         Matrix mat(meta[2], meta[3]);
         mat.cells_.resize(meta[4]);
