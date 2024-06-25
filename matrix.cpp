@@ -51,8 +51,6 @@ class Partition {
 
 Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
     auto &info = MPIInfo::instance();
-    const int MSG_META = 2001;
-    const int MSG_CELLS = 2002;
     if (info.rank() == 0) {
         std::ifstream stream(filename);
 
@@ -95,11 +93,6 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
                 matrices[part_num(r, c)].emplace_back(Cell {i, cols[ptr], values[ptr]});
             }
         }
-
-        /* deallocate */
-        values = {};
-        cols = {};
-        cells_per_row = {};
 
         auto row_idx = [&](int k, int i) {
             return split == SplitAlong::Row ? k + info.num_layers() * i : i;
@@ -148,7 +141,7 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
                         matrices[part_num(r, c)].size() * sizeof(Cell),
                         MPI_BYTE,
                         proc_idx(k, i, j),
-                        MSG_CELLS,
+                        0,
                         MPI_COMM_WORLD,
                         &requests[proc_idx(k, i, j)]
                     );
@@ -173,7 +166,7 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
             meta[4] * sizeof(Cell),
             MPI_BYTE,
             0,
-            MSG_CELLS,
+            0,
             MPI_COMM_WORLD,
             MPI_STATUS_IGNORE
         );
