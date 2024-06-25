@@ -51,9 +51,8 @@ class Partition {
 
 Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
     auto &info = MPIInfo::instance();
-    const int MSG_META = 2001 + (split == SplitAlong::Col ? 100 : 0);
-    const int MSG_CELLS = 2002 + (split == SplitAlong::Col ? 100 : 0);
-
+    const int MSG_META = 2001;
+    const int MSG_CELLS = 2002;
     if (info.rank() == 0) {
         std::ifstream stream(filename);
 
@@ -132,6 +131,7 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
             }
         }
 
+        std::vector<MPI_Request> requests2(info.num_procs());
         for (int k = 0; k < info.num_layers(); k++) {
             for (int i = 0; i < info.pc(); i++) {
                 for (int j = 0; j < info.pc(); j++) {
@@ -148,7 +148,7 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
                         proc_idx(k, i, j),
                         MSG_CELLS,
                         MPI_COMM_WORLD,
-                        &requests[proc_idx(k, i, j)]
+                        &requests2[proc_idx(k, i, j)]
                     );
                 }
             }
@@ -157,7 +157,7 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
         Matrix own(row_part.starts_at(1), col_part.starts_at(1));
         own.cells_ = std::move(matrices[0]);
 
-        MPI_Waitall(info.num_procs() - 1, &requests[1], MPI_STATUSES_IGNORE);
+        MPI_Waitall(info.num_procs() - 1, &requests2[1], MPI_STATUSES_IGNORE);
         return own;
     } else {
         MPI_Request request;
