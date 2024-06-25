@@ -159,21 +159,24 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
         MPI_Waitall(info.num_procs() - 1, &requests[1], MPI_STATUSES_IGNORE);
         return own;
     } else {
+        MPI_Request request;
         std::array<uint32_t, 5> meta;
-        MPI_Recv(meta.data(), 5, MPI_UINT32_T, 0, MSG_META, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_Irecv(meta.data(), 5, MPI_UINT32_T, 0, MSG_META, MPI_COMM_WORLD, &request);
+        MPI_Wait(&request, MPI_STATUS_IGNORE);
 
         Matrix mat(meta[2], meta[3]);
         mat.cells_.resize(meta[4]);
 
-        MPI_Recv(
+        MPI_Irecv(
             mat.cells_.data(),
             meta[4] * sizeof(Cell),
             MPI_BYTE,
             0,
             MSG_CELLS,
             MPI_COMM_WORLD,
-            MPI_STATUS_IGNORE
+            &request
         );
+        MPI_Wait(&request, MPI_STATUS_IGNORE);
 
         for (auto &cell : mat.cells_) {
             cell.row -= meta[0];
