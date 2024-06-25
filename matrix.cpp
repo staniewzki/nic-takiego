@@ -154,10 +154,19 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
             }
         }
 
+        for (int k = 0; k < info.num_layers(); k++) {
+            for (int i = 0; i < info.pc(); i++) {
+                for (int j = 0; j < info.pc(); j++) {
+                    if (k == 0 && i == 0 && j == 0) continue;
+                    MPI_Wait(&requests2[proc_idx(k, i, j)], MPI_STATUS_IGNORE);
+                }
+            }
+        }
+
         Matrix own(row_part.starts_at(1), col_part.starts_at(1));
         own.cells_ = std::move(matrices[0]);
 
-        MPI_Waitall(info.num_procs() - 1, &requests2[1], MPI_STATUSES_IGNORE);
+        // MPI_Waitall(info.num_procs() - 1, &requests2[1], MPI_STATUSES_IGNORE);
         return own;
     } else {
         MPI_Request request;
