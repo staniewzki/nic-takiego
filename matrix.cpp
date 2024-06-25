@@ -51,6 +51,9 @@ class Partition {
 
 Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
     auto &info = MPIInfo::instance();
+    const int MSG_META = 1001;
+    const int MSG_CELLS = 1002;
+
     if (info.rank() == 0) {
         std::ifstream stream(filename);
 
@@ -123,11 +126,10 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
                     };
 
                     MPI_Isend(meta.data(), meta.size(), MPI_UINT32_T, proc_idx(k, i, j),
-                              1001, MPI_COMM_WORLD, &requests[proc_idx(k, i, j)]);
+                              MSG_META, MPI_COMM_WORLD, &requests[proc_idx(k, i, j)]);
                 }
             }
         }
-
 
         for (int k = 0; k < info.num_layers(); k++) {
             for (int i = 0; i < info.pc(); i++) {
@@ -143,7 +145,7 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
                         matrices[part_num(r, c)].size() * sizeof(Cell),
                         MPI_BYTE,
                         proc_idx(k, i, j),
-                        1002,
+                        MSG_CELLS,
                         MPI_COMM_WORLD,
                         &requests[proc_idx(k, i, j)]
                     );
@@ -154,11 +156,11 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
         Matrix own(row_part.starts_at(1), col_part.starts_at(1));
         own.cells_ = std::move(matrices[0]);
 
-        MPI_Waitall(info.num_procs() - 1, &requests[1], MPI_STATUS_IGNORE);
+        MPI_Waitall(info.num_procs() - 1, &requests[1], MPI_STATUSES_IGNORE);
         return own;
     } else {
         std::array<uint32_t, 5> meta;
-        MPI_Recv(meta.data(), 5, MPI_UINT32_T, 0, 1001, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_Recv(meta.data(), 5, MPI_UINT32_T, 0, MSG_META, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
         Matrix mat(meta[2], meta[3]);
         mat.cells_.resize(meta[4]);
@@ -168,7 +170,7 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
             meta[4] * sizeof(Cell),
             MPI_BYTE,
             0,
-            1002,
+            MSG_CELLS,
             MPI_COMM_WORLD,
             MPI_STATUS_IGNORE
         );
