@@ -71,6 +71,8 @@ int main(int argc, char *argv[]) {
     /* Set number of layers */
     auto &info = MPIInfo::instance(conf.layers);
 
+    double start = MPI_Wtime();
+
     if (!conf.path_a && !conf.path_b) {
         if (info.rank() == 0) {
             std::cerr << "error: matrices are not provided\n";
@@ -119,6 +121,11 @@ int main(int argc, char *argv[]) {
         if (info.rank() == 0) {
             std::cout << sum << "\n";
         }
+    }
+
+    if (info.rank() == 0) {
+        double end = MPI_Wtime();
+        std::cerr << "elapsed: " << end - start << "s\n";
     }
 
     MPI_Finalize();
