@@ -246,14 +246,13 @@ void Matrix::sort_by_cols() {
     );
 }
 
-void Matrix::init_broadcast(int self, int root, MPI_Comm comm, MatrixInfo &info) {
+void Matrix::init_broadcast(int self, int root, MPI_Comm comm, MatrixInfo &info, MPI_Request &request) {
     if (self == root)
-        info = {n_, m_, static_cast<uint32_t>(cells_.size())};
-    MPI_Ibcast(info.data.data(), 3, MPI_UINT32_T, root, comm, &info.request);
+        info = get_info();
+    MPI_Ibcast(info.data.data(), 3, MPI_UINT32_T, root, comm, &request);
 }
 
 void Matrix::broadcast(int self, int root, MPI_Comm comm, MatrixInfo &info, MPI_Request &request) {
-    MPI_Wait(&info.request, MPI_STATUS_IGNORE);
     if (self != root) {
         n_ = info.n();
         m_ = info.m();
@@ -263,27 +262,8 @@ void Matrix::broadcast(int self, int root, MPI_Comm comm, MatrixInfo &info, MPI_
     MPI_Ibcast(cells_.data(), cells_.size() * sizeof(Cell), MPI_BYTE, root, comm, &request);
 }
 
-void Matrix::init_send(int dest, MatrixInfo &info) const {
-    info = {n_, m_, static_cast<uint32_t>(cells_.size())};
-    MPI_Isend(info.data.data(), 3, MPI_UINT32_T, dest, 0, MPI_COMM_WORLD, &info.request);
-}
-
-void Matrix::send(int dest, MatrixInfo &info, MPI_Request &request) const {
-    MPI_Wait(&info.request, MPI_STATUS_IGNORE);
-    MPI_Isend(cells_.data(), cells_.size() * sizeof(Cell), MPI_BYTE, dest, 0, MPI_COMM_WORLD, &request);
-}
-
-void Matrix::init_receive(int source, MatrixInfo &info) {
-    MPI_Irecv(info.data.data(), 3, MPI_UINT32_T, source, 0, MPI_COMM_WORLD, &info.request);
-}
-
-void Matrix::receive(int source, MatrixInfo &info, MPI_Request &request) {
-    MPI_Wait(&info.request, MPI_STATUS_IGNORE);
-    n_ = info.n();
-    m_ = info.m();
-    cells_.resize(info.cells());
-
-    MPI_Irecv(cells_.data(), cells_.size() * sizeof(Cell), MPI_BYTE, source, 0, MPI_COMM_WORLD, &request);
+MatrixInfo Matrix::get_info() const {
+    return {n_, m_, static_cast<uint32_t>(cells_.size())};
 }
 
 Matrix Matrix::merge(std::vector<Matrix> matrices) {
@@ -325,6 +305,22 @@ Matrix Matrix::merge(std::vector<Matrix> matrices) {
     return mat;
 }
 
+Matrix Matrix::merge(uint32_t n, uint32_t m, std::vector<Cell> cells) {
+    std::sort(cells.begin(), cells.end(), [&](const Cell &a, const Cell &b) {
+        return std::pair(a.row, a.col) < std::pair(b.row, b.col);
+    });
+
+    Matrix result(n, m);
+    for (const auto &cell : cells) {
+        if (result.cells_.empty() || result.cells_.back().row != cell.row || result.cells_.back().col != cell.col)
+            result.cells_.emplace_back(cell);
+        else
+            result.cells_.back().value += cell.value;
+    }
+
+    return result;
+}
+
 long long Matrix::count_greater(long long value) const {
     long long res = 0;
     for (const auto &cell : cells_) {
@@ -348,20 +344,16 @@ std::vector<Matrix> Matrix::col_split() {
         res.emplace_back(n_, part.starts_at(i + 1) - part.starts_at(i));
 
     for (auto &cell : cells_) {
-        int l = 0, r = info.num_layers() - 1;
-        while (l < r) {
-            int m = (l + r + 1) / 2;
-            if (cell.col >= part.starts_at(m))
-                l = m;
-            else
-                r = m - 1;
-        }
-
-        cell.col -= part.starts_at(l);
-        res[l].cells_.push_back(std::move(cell));
+        int idx = part.belongs_to(cell.col);
+        cell.col -= part.starts_at(idx);
+        res[idx].cells_.push_back(std::move(cell));
     }
 
     return res;
+}
+
+const std::vector<Cell> &Matrix::cells() const {
+    return cells_;
 }
 
 void Matrix::print() const {

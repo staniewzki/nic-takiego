@@ -14,32 +14,43 @@ Matrix summa3d(const char *path_a, const char *path_b) {
     int grid = info.pc() * info.pc();
     int fiber = info.rank() % grid;
 
-    std::vector<Matrix> layered(info.num_layers());
-    layered[info.layer()] = std::move(split[info.layer()]);
+    MPI_Comm fiber_comm;
+    MPI_Comm_split(MPI_COMM_WORLD, fiber, info.layer(), &fiber_comm);
 
-    std::vector<MatrixInfo> init_send(info.num_layers());
-    std::vector<MatrixInfo> init_recv(info.num_layers());
+    std::vector<MatrixInfo> send_meta(info.num_layers());
+    std::vector<MatrixInfo> recv_meta(info.num_layers());
+    for (int i = 0; i < info.num_layers(); i++)
+        send_meta[i] = split[i].get_info();
+
+    MPI_Alltoall(send_meta.data(), sizeof(MatrixInfo), MPI_BYTE,
+                 recv_meta.data(), sizeof(MatrixInfo), MPI_BYTE, fiber_comm);
+
+    std::vector<int> sendcnt(info.num_layers()), sendoff(info.num_layers());
+    std::vector<int> recvcnt(info.num_layers()), recvoff(info.num_layers());
+    int total_send = 0, total_recv = 0;
     for (int i = 0; i < info.num_layers(); i++) {
-        if (i != info.layer()) {
-            split[i].init_send(grid * i + fiber, init_send[i]);
-            layered[i].init_receive(grid * i + fiber, init_recv[i]);
-        }
+        sendoff[i] = total_send;
+        recvoff[i] = total_recv;
+        sendcnt[i] = send_meta[i].cells() * sizeof(Cell);
+        recvcnt[i] = recv_meta[i].cells() * sizeof(Cell);
+        total_send += sendcnt[i];
+        total_recv += recvcnt[i];
     }
 
-    std::vector<MPI_Request> send, recv;
-    send.reserve(info.num_layers() - 1);
-    recv.reserve(info.num_layers() - 1);
-    for (int i = 0; i < info.num_layers(); i++) {
-        if (i != info.layer()) {
-            send.push_back({});
-            recv.push_back({});
-            split[i].send(grid * i + fiber, init_send[i], send.back());
-            layered[i].receive(grid * i + fiber, init_recv[i], recv.back());
-        }
+    std::vector<Cell> send_data;
+    send_data.reserve(total_send);
+    for (int i = 0; i < info.num_layers(); i++)
+        for (const auto &cell : split[i].cells())
+            send_data.emplace_back(cell);
+
+    std::vector<Cell> recv_data(total_recv);
+    MPI_Alltoallv(send_data.data(), sendcnt.data(), sendoff.data(), MPI_BYTE,
+                  recv_data.data(), recvcnt.data(), recvoff.data(), MPI_BYTE, fiber_comm);
+
+    for (int i = 1; i < info.num_layers(); i++) {
+        assert(recv_meta[0].n() == recv_meta[i].n());
+        assert(recv_meta[0].m() == recv_meta[i].m());
     }
 
-    MPI_Waitall(info.num_layers() - 1, send.data(), MPI_STATUS_IGNORE);
-    MPI_Waitall(info.num_layers() - 1, recv.data(), MPI_STATUS_IGNORE);
-
-    return Matrix::merge(layered);
+    return Matrix::merge(recv_meta[0].n(), recv_meta[0].m(), std::move(recv_data));
 }

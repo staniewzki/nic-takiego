@@ -11,7 +11,6 @@ struct Cell {
 
 struct MatrixInfo {
     std::array<uint32_t, 3> data;
-    MPI_Request request;
 
     MatrixInfo() = default;
 
@@ -51,23 +50,21 @@ class Matrix {
 
     void sort_by_cols();
 
-    void init_broadcast(int self, int root, MPI_Comm comm, MatrixInfo &info);
+    void init_broadcast(int self, int root, MPI_Comm comm, MatrixInfo &info, MPI_Request &request);
 
     void broadcast(int self, int root, MPI_Comm comm, MatrixInfo &info, MPI_Request &request);
 
-    void init_send(int dest, MatrixInfo &info) const;
-
-    void send(int dest, MatrixInfo &info, MPI_Request &request) const;
-
-    void init_receive(int source, MatrixInfo &info);
-
-    void receive(int source, MatrixInfo &info, MPI_Request &request);
+    MatrixInfo get_info() const;
 
     static Matrix merge(std::vector<Matrix> matrices);
+
+    static Matrix merge(uint32_t n, uint32_t m, std::vector<Cell> cells);
 
     long long count_greater(long long value) const;
 
     std::vector<Matrix> col_split();
+
+    const std::vector<Cell> &cells() const;
 
     void print() const;
 

@@ -57,11 +57,15 @@ Matrix summa2d(const char *path_a, const char *path_b) {
 
     auto prepare_matrices = [&](int stage) {
         std::array<MatrixInfo, 2> meta;
-        std::array<MPI_Request, 2> broadcast;
+        std::array<MPI_Request, 2> init, broadcast;
         auto [a_cur, b_cur] = get_matrices(stage);
 
-        a_cur.init_broadcast(info.col(), stage, row_comm, meta[0]);
-        b_cur.init_broadcast(info.row(), stage, col_comm, meta[1]);
+        a_cur.init_broadcast(info.col(), stage, row_comm, meta[0], init[0]);
+        b_cur.init_broadcast(info.row(), stage, col_comm, meta[1], init[1]);
+
+        MPI_Wait(&init[0], MPI_STATUS_IGNORE);
+        MPI_Wait(&init[1], MPI_STATUS_IGNORE);
+
         a_cur.broadcast(info.col(), stage, row_comm, meta[0], broadcast[0]);
         b_cur.broadcast(info.row(), stage, col_comm, meta[1], broadcast[1]);
 
@@ -82,5 +86,5 @@ Matrix summa2d(const char *path_a, const char *path_b) {
         intermediate_result[stage] = a_cur * b_cur;
     }
 
-    return Matrix::merge(intermediate_result);
+    return Matrix::merge(std::move(intermediate_result));
 }

@@ -27,9 +27,9 @@ def diff(main_out, brute_out):
 for i in range(100):
     print(f'running test number {i}')
 
-    l = random.randint(1, 2)
-    pc = random.randint(1, 2)
-    n = random.randint(3, 20)
+    l = random.randint(1, 3)
+    pc = random.randint(1, 3)
+    n = random.randint(l * pc, 30)
 
     generate(n, n, random.randint(0, n * n), 'atest')
     generate(n, n, random.randint(0, n * n), 'btest')
