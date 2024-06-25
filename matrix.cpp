@@ -108,6 +108,28 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
             return k * info.pc() * info.pc() + i * info.pc() + j;
         };
 
+        std::vector<std::array<uint32_t, 5>> meta(info.num_procs());
+        for (int k = 0; k < info.num_layers(); k++) {
+            for (int i = 0; i < info.pc(); i++) {
+                for (int j = 0; j < info.pc(); j++) {
+                    int r = row_idx(k, i);
+                    int c = col_idx(k, j);
+                    if (r == 0 && c == 0) continue;
+
+                    meta[proc_idx(k, i, j)] = {
+                        row_part.starts_at(r),
+                        col_part.starts_at(c),
+                        row_part.starts_at(r + 1) - row_part.starts_at(r),
+                        col_part.starts_at(c + 1) - col_part.starts_at(c),
+                        static_cast<uint32_t>(matrices[part_num(r, c)].size()),
+                    };
+                }
+            }
+        }
+
+        std::array<uint32_t, 5> self_meta;
+        MPI_Scatter(meta.data(), 5, MPI_UINT32_T, self_meta.data(), 5, MPI_UINT32_T, 0, MPI_COMM_WORLD);
+
         std::vector<MPI_Request> requests(info.num_procs());
         for (int k = 0; k < info.num_layers(); k++) {
             for (int i = 0; i < info.pc(); i++) {
@@ -116,31 +138,6 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
                     int c = col_idx(k, j);
                     if (r == 0 && c == 0) continue;
 
-                    std::array meta = {
-                        row_part.starts_at(r),
-                        col_part.starts_at(c),
-                        row_part.starts_at(r + 1) - row_part.starts_at(r),
-                        col_part.starts_at(c + 1) - col_part.starts_at(c),
-                        static_cast<uint32_t>(matrices[part_num(r, c)].size()),
-                    };
-
-                    std::cerr << "sending to: " << proc_idx(k, i, j) << " cells: " << matrices[part_num(r, c)].size() << "\n";
-                    MPI_Send(meta.data(), meta.size(), MPI_UINT32_T, proc_idx(k, i, j),
-                              MSG_META, MPI_COMM_WORLD); // , &requests[proc_idx(k, i, j)]);
-                }
-            }
-        }
-
-        std::vector<MPI_Request> requests2(info.num_procs());
-        for (int k = 0; k < info.num_layers(); k++) {
-            for (int i = 0; i < info.pc(); i++) {
-                for (int j = 0; j < info.pc(); j++) {
-                    int r = row_idx(k, i);
-                    int c = col_idx(k, j);
-                    if (r == 0 && c == 0) continue;
-
-                    // MPI_Wait(&requests[proc_idx(k, i, j)], MPI_STATUS_IGNORE);
-
                     MPI_Isend(
                         matrices[part_num(r, c)].data(),
                         matrices[part_num(r, c)].size() * sizeof(Cell),
@@ -148,17 +145,8 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
                         proc_idx(k, i, j),
                         MSG_CELLS,
                         MPI_COMM_WORLD,
-                        &requests2[proc_idx(k, i, j)]
+                        &requests[proc_idx(k, i, j)]
                     );
-                }
-            }
-        }
-
-        for (int k = 0; k < info.num_layers(); k++) {
-            for (int i = 0; i < info.pc(); i++) {
-                for (int j = 0; j < info.pc(); j++) {
-                    if (k == 0 && i == 0 && j == 0) continue;
-                    MPI_Wait(&requests2[proc_idx(k, i, j)], MPI_STATUS_IGNORE);
                 }
             }
         }
@@ -166,28 +154,25 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
         Matrix own(row_part.starts_at(1), col_part.starts_at(1));
         own.cells_ = std::move(matrices[0]);
 
-        // MPI_Waitall(info.num_procs() - 1, &requests2[1], MPI_STATUSES_IGNORE);
+        MPI_Waitall(info.num_procs() - 1, &requests[1], MPI_STATUSES_IGNORE);
         return own;
     } else {
-        MPI_Request request;
         std::array<uint32_t, 5> meta;
-        MPI_Irecv(meta.data(), 5, MPI_UINT32_T, 0, MSG_META, MPI_COMM_WORLD, &request);
-        MPI_Wait(&request, MPI_STATUS_IGNORE);
+        MPI_Scatter(nullptr, 5, MPI_UINT32_T, meta.data(), 5, MPI_UINT32_T, 0, MPI_COMM_WORLD);
         std::cerr << "received: " << info.rank() << " cells: " << meta[4] << "\n";
 
         Matrix mat(meta[2], meta[3]);
         mat.cells_.resize(meta[4]);
 
-        MPI_Irecv(
+        MPI_Recv(
             mat.cells_.data(),
             meta[4] * sizeof(Cell),
             MPI_BYTE,
             0,
             MSG_CELLS,
             MPI_COMM_WORLD,
-            &request
+            MPI_STATUS_IGNORE
         );
-        MPI_Wait(&request, MPI_STATUS_IGNORE);
 
         for (auto &cell : mat.cells_) {
             cell.row -= meta[0];
