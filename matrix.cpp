@@ -51,8 +51,8 @@ class Partition {
 
 Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
     auto &info = MPIInfo::instance();
-    const int MSG_META = 1001;
-    const int MSG_CELLS = 1002;
+    const int MSG_META = 2001 + (split == SplitAlong::Col ? 100 : 0);
+    const int MSG_CELLS = 2002 + (split == SplitAlong::Col ? 100 : 0);
 
     if (info.rank() == 0) {
         std::ifstream stream(filename);
