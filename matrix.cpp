@@ -96,6 +96,11 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
             }
         }
 
+        /* deallocate */
+        values = {};
+        cols = {};
+        cells_per_row = {};
+
         auto row_idx = [&](int k, int i) {
             return split == SplitAlong::Row ? k + info.num_layers() * i : i;
         };
@@ -159,7 +164,6 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
     } else {
         std::array<uint32_t, 5> meta;
         MPI_Scatter(nullptr, 5, MPI_UINT32_T, meta.data(), 5, MPI_UINT32_T, 0, MPI_COMM_WORLD);
-        std::cerr << "received: " << info.rank() << " cells: " << meta[4] << "\n";
 
         Matrix mat(meta[2], meta[3]);
         mat.cells_.resize(meta[4]);
