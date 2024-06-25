@@ -94,6 +94,10 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
             }
         }
 
+        values = {};
+        cols = {};
+        cells_per_row = {};
+
         auto row_idx = [&](int k, int i) {
             return split == SplitAlong::Row ? k + info.num_layers() * i : i;
         };
@@ -336,7 +340,7 @@ Matrix Matrix::merge(uint32_t n, uint32_t m, std::vector<Cell> cells) {
     return result;
 }
 
-long long Matrix::count_greater(long long value) const {
+long long Matrix::count_greater(double value) const {
     long long res = 0;
     for (const auto &cell : cells_) {
         if (cell.value > value)

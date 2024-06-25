@@ -15,7 +15,7 @@ enum class Mode {
 
 struct Config {
     bool print_result = false;
-    std::optional<long long> g_value;
+    std::optional<double> g_value;
     const char *path_a = NULL, *path_b = NULL;
     std::optional<Mode> mode;
     int layers = 0;
@@ -39,7 +39,7 @@ Config parse_args(int argc, char *argv[]) {
         } else if (strcmp(argv[i], "-v") == 0) {
             conf.print_result = true;
         } else if (strcmp(argv[i], "-g") == 0) {
-            conf.g_value = std::atoll(following_arg("-g"));
+            conf.g_value = std::atof(following_arg("-g"));
         } else if (strcmp(argv[i], "-t") == 0) {
             auto mode = following_arg("-t");
             if (strcmp(mode, "2D") == 0) {

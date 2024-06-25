@@ -60,7 +60,7 @@ class Matrix {
 
     static Matrix merge(uint32_t n, uint32_t m, std::vector<Cell> cells);
 
-    long long count_greater(long long value) const;
+    long long count_greater(double value) const;
 
     std::vector<Matrix> col_split();
 
