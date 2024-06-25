@@ -51,6 +51,7 @@ class Partition {
 
 Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
     auto &info = MPIInfo::instance();
+    double start = MPI_Wtime();
     if (info.rank() == 0) {
         std::ifstream stream(filename);
 
@@ -138,6 +139,10 @@ Matrix Matrix::read_and_distribute(const char *filename, SplitAlong split) {
 
         Matrix own(row_part.starts_at(1), col_part.starts_at(1));
         own.cells_ = std::move(matrices[0]);
+
+        double end = MPI_Wtime();
+        std::cerr << "distributed data in: " << (end - start) << "s\n";
+
         return own;
     } else {
         std::array<uint32_t, 5> meta;
